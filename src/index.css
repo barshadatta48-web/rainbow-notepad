@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Helvetica Neue", Arial, sans-serif;
+  
+  --color-minimal-bg: #fdfdfd;
+  --color-note-red: #ffcdd2;
+  --color-note-orange: #ffe0b2;
+  --color-note-yellow: #fff9c4;
+  --color-note-green: #c8e6c9;
+  --color-note-blue: #b3e5fc;
+  --color-note-indigo: #c5cae9;
+  --color-note-purple: #e1bee7;
+}
+
+@layer utilities {
+  @keyframes rainbow-border {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+  .animate-rainbow-slow {
+    background: linear-gradient(90deg, #ff000022, #ffa50022, #ffff0022, #00800022, #0000ff22, #4b008222, #ee82ee22);
+    background-size: 400% 400%;
+    animation: rainbow-border 15s ease infinite;
+  }
+}
+
+@layer components {
+  .note-corner-fold::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    border-width: 15px 15px 0 0;
+    border-style: solid;
+    border-color: rgba(0,0,0,0.05) transparent transparent transparent;
+  }
+}
+
