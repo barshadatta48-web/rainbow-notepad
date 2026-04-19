@@ -349,13 +349,6 @@ export default function App() {
                     <MessageCircle size={18} className="text-blue-500" />
                     AI Chat Assistant
                   </button>
-                  <button
-                    onClick={(e) => startVoiceRecording(e)}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-black/5 rounded-xl transition-colors text-slate-700"
-                  >
-                    <Mic size={18} className="text-red-500" />
-                    Voice Chat Recorder
-                  </button>
                 </motion.div>
               )}
             </AnimatePresence>
