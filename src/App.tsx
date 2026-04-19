@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Trash2, Edit3, Check, X, Palette, MessageCircle, Send, Sparkles, Loader2, Image as ImageIcon, Camera } from 'lucide-react';
+import { Plus, Trash2, Edit3, Check, X, Palette, MessageCircle, Send, Sparkles, Loader2, Image as ImageIcon, Camera, MoreVertical, CheckCircle2, Mic, MicOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
 
@@ -14,11 +14,18 @@ interface Note {
   color: string;
   rotation: number;
   image?: string;
+  completed?: boolean;
 }
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+}
+
+declare global {
+  interface Window {
+    webkitSpeechRecognition: any;
+  }
 }
 
 const COLORS = [
@@ -35,7 +42,13 @@ export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
   
+  // Voice state
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
   // Ref for hidden file input
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [lastUploadTargetId, setLastUploadTargetId] = useState<string | null>(null);
@@ -74,11 +87,22 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Handle outside clicks to close menus
+  useEffect(() => {
+    const handleClickOutside = () => {
+      setOpenMenuId(null);
+      setIsHeaderMenuOpen(false);
+    };
+    window.addEventListener('click', handleClickOutside);
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, []);
+
   const addNote = (text = '', image?: string) => {
     const newNote: Note = {
       id: crypto.randomUUID(),
       text,
       image,
+      completed: false,
       color: COLORS[notes.length % COLORS.length], // Cyclic rainbow colors
       rotation: 0,
     };
@@ -89,16 +113,20 @@ export default function App() {
     }
   };
 
-  const deleteNote = (id: string) => {
+  const deleteNote = (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     setNotes(notes.filter((n) => n.id !== id));
     if (editingId === id) {
       setEditingId(null);
     }
+    setOpenMenuId(null);
   };
 
-  const startEditing = (note: Note) => {
+  const startEditing = (note: Note, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     setEditingId(note.id);
     setEditText(note.text);
+    setOpenMenuId(null);
   };
 
   const saveNote = () => {
@@ -112,7 +140,13 @@ export default function App() {
     }
   };
 
-  const changeColor = (id: string) => {
+  const toggleComplete = (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setNotes(notes.map(n => n.id === id ? { ...n, completed: !n.completed } : n));
+  };
+
+  const changeColor = (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     setNotes(
       notes.map((n) => {
         if (n.id === id) {
@@ -144,15 +178,67 @@ export default function App() {
     reader.readAsDataURL(file);
     // Reset file input
     event.target.value = '';
+    setOpenMenuId(null);
   };
 
   const removeImage = (id: string) => {
     setNotes(prev => prev.map(n => n.id === id ? { ...n, image: undefined } : n));
   };
 
-  const triggerGallery = (noteId: string | null = null) => {
+  const triggerGallery = (noteId: string | null = null, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     setLastUploadTargetId(noteId);
     fileInputRef.current?.click();
+    setOpenMenuId(null);
+  };
+
+  const toggleMenu = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setOpenMenuId(openMenuId === id ? null : id);
+  };
+
+  const startVoiceRecording = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    if (!('webkitSpeechRecognition' in window)) {
+      alert("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    const recognition = new window.webkitSpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      setIsRecording(true);
+      setIsChatOpen(true);
+      setIsHeaderMenuOpen(false);
+    };
+
+    recognition.onresult = (event: any) => {
+      const transcript = Array.from(event.results)
+        .map((result: any) => result[0])
+        .map((result: any) => result.transcript)
+        .join('');
+      setChatInput(transcript);
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error("Speech recognition error:", event.error);
+      setIsRecording(false);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
   };
 
   const handleSendMessage = async () => {
@@ -220,16 +306,60 @@ export default function App() {
         <div className="flex items-center gap-[15px]">
           <button
             onClick={() => addNote()}
-            className="group/btn px-6 py-2.5 bg-black text-white rounded-[20px] text-sm font-bold flex items-center gap-3 transition-all hover:scale-105 hover:bg-slate-800 active:scale-95 shadow-xl"
+            className="group/btn px-6 py-2.5 bg-black text-white rounded-[20px] text-sm font-bold flex items-center gap-2 transition-all hover:scale-105 hover:bg-slate-800 active:scale-95 shadow-xl"
           >
-            <div className="flex items-center -space-x-1">
-              <Plus size={18} className="relative z-10" />
-              <div className="bg-gradient-to-tr from-red-500 via-yellow-500 to-purple-500 p-1 rounded-full shadow-sm group-hover/btn:scale-110 transition-transform">
-                <Sparkles size={10} className="text-white" />
-              </div>
-            </div>
+            <Plus size={18} />
             New Note
           </button>
+
+          {/* Header Three-dot Menu */}
+          <div className="relative">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsHeaderMenuOpen(!isHeaderMenuOpen);
+              }}
+              className={`p-2 rounded-full transition-all hover:bg-black/5 ${isHeaderMenuOpen ? 'bg-black text-white' : 'text-slate-600'}`}
+            >
+              <MoreVertical size={24} />
+            </button>
+
+            <AnimatePresence>
+              {isHeaderMenuOpen && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                  className="absolute top-full right-0 mt-4 w-56 bg-white/90 backdrop-blur-2xl border border-black/5 rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.1)] z-[100] overflow-hidden p-2"
+                >
+                  <button
+                    onClick={() => {}}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-black/5 rounded-xl transition-colors text-slate-700"
+                  >
+                    <Palette size={18} className="text-purple-500" />
+                    Theme
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsChatOpen(true);
+                      setIsHeaderMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-black/5 rounded-xl transition-colors text-slate-700"
+                  >
+                    <MessageCircle size={18} className="text-blue-500" />
+                    AI Chat Assistant
+                  </button>
+                  <button
+                    onClick={(e) => startVoiceRecording(e)}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-black/5 rounded-xl transition-colors text-slate-700"
+                  >
+                    <Mic size={18} className="text-red-500" />
+                    Voice Chat Recorder
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </header>
 
@@ -257,6 +387,7 @@ export default function App() {
                     shadow-[0_10px_20px_rgba(0,0,0,0.06)] hover:shadow-[0_25px_50px_rgba(0,0,0,0.12)]
                     transition-all duration-300 note-corner-fold
                     ${note.color}
+                    ${note.completed ? 'opacity-80 scale-[0.98]' : ''}
                   `}
                 >
                   <div className="note-header w-full flex justify-between items-center text-[12px] uppercase tracking-[2px] font-black opacity-40 mb-[25px]">
@@ -264,7 +395,7 @@ export default function App() {
                        <div className="w-2 h-2 rounded-full bg-white/50" />
                        <span>{new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit' })}</span>
                     </div>
-                    <span className="bg-white/30 px-2.5 py-1 rounded-full text-[10px] backdrop-blur-sm">Spectrum</span>
+                    {note.completed && <span className="bg-black/10 px-2 py-0.5 rounded italic lowercase tracking-normal">Done</span>}
                   </div>
 
                   {note.image && (
@@ -303,9 +434,51 @@ export default function App() {
                       />
                       <div className="flex items-center justify-between pt-4">
                         <span className="text-[10px] opacity-40 italic">Ctrl+Enter to save</span>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 relative">
                           <button onClick={() => setEditingId(null)} className="p-2 hover:bg-black/5 rounded-full transition-colors"><X size={16} /></button>
                           <button onClick={saveNote} className="p-2 bg-black text-white rounded-full transition-transform active:scale-90"><Check size={16} /></button>
+                          
+                          {/* Three-dot in editing mode */}
+                          <div className="relative">
+                            <button 
+                              onClick={(e) => toggleMenu(note.id, e)}
+                              className="p-2 hover:bg-black/5 rounded-full transition-colors"
+                            >
+                              <MoreVertical size={16} />
+                            </button>
+                            <AnimatePresence>
+                              {openMenuId === note.id && (
+                                <motion.div 
+                                  initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                                  exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                                  className="absolute bottom-full right-0 mb-2 w-48 bg-white/90 backdrop-blur-xl border border-black/5 rounded-2xl shadow-2xl z-[100] overflow-hidden"
+                                >
+                                  <button 
+                                    onClick={(e) => triggerGallery(note.id, e)}
+                                    className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors border-b border-black/5"
+                                  >
+                                    <ImageIcon size={16} className="text-slate-400" />
+                                    <span>Add Photo</span>
+                                  </button>
+                                  <button 
+                                    onClick={() => setEditingId(null)}
+                                    className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors text-red-500 border-b border-black/5"
+                                  >
+                                    <X size={16} />
+                                    <span>Discard Changes</span>
+                                  </button>
+                                  <button 
+                                    onClick={(e) => startVoiceRecording(e)}
+                                    className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors text-slate-700"
+                                  >
+                                    <Mic size={16} className="text-red-500" />
+                                    <span>Voice Record</span>
+                                  </button>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -313,40 +486,80 @@ export default function App() {
                     <div className="w-full h-full flex flex-col group">
                       <div 
                         onClick={() => startEditing(note)}
-                        className="flex-1 w-full cursor-pointer overflow-hidden text-[22px] font-medium leading-[1.4] text-[#222] whitespace-pre-wrap"
+                        className={`flex-1 w-full cursor-pointer overflow-hidden text-[22px] font-medium leading-[1.4] text-[#222] whitespace-pre-wrap ${note.completed ? 'line-through opacity-40' : ''}`}
                       >
                         {note.text || (!note.image && <span className="opacity-20 italic">Click to add note...</span>)}
                       </div>
                       
-                      <div className="flex items-center justify-end gap-3 pt-4 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0">
+                      <div className="flex items-center justify-end gap-3 pt-4 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 relative">
+                        {/* 1. Right Icon (Toggle completion) */}
                         <button
-                          onClick={() => triggerGallery(note.id)}
-                          className="p-2 rounded-full hover:bg-black/5 text-[#666] transition-colors"
-                          title="Add/Change photo"
+                          onClick={(e) => toggleComplete(note.id, e)}
+                          className={`p-2 rounded-full transition-colors ${note.completed ? 'bg-green-500 text-white' : 'hover:bg-black/5 text-[#666]'}`}
+                          title="Mark as done"
                         >
-                          <ImageIcon size={18} />
+                          {note.completed ? <CheckCircle2 size={18} /> : <Check size={18} />}
                         </button>
+                        
+                        {/* 2. Delete Icon */}
                         <button
-                          onClick={() => changeColor(note.id)}
-                          className="p-2 rounded-full hover:bg-black/5 text-[#666] transition-colors"
-                          title="Color"
-                        >
-                          <Palette size={18} />
-                        </button>
-                        <button
-                          onClick={() => startEditing(note)}
-                          className="p-2 rounded-full hover:bg-black/5 text-[#666] transition-colors"
-                          title="Edit"
-                        >
-                          <Edit3 size={18} />
-                        </button>
-                        <button
-                          onClick={() => deleteNote(note.id)}
+                          onClick={(e) => deleteNote(note.id, e)}
                           className="p-2 rounded-full hover:bg-red-50 text-red-500 transition-colors"
                           title="Delete"
                         >
                           <Trash2 size={18} />
                         </button>
+
+                        {/* 3. Three-dot Icon */}
+                        <div className="relative">
+                          <button
+                            onClick={(e) => toggleMenu(note.id, e)}
+                            className={`p-2 rounded-full transition-colors ${openMenuId === note.id ? 'bg-black text-white' : 'hover:bg-black/5 text-[#666]'}`}
+                            title="More options"
+                          >
+                            <MoreVertical size={18} />
+                          </button>
+                          
+                          <AnimatePresence>
+                            {openMenuId === note.id && (
+                              <motion.div 
+                                initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                                animate={{ opacity: 1, scale: 1, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                                className="absolute bottom-full right-0 mb-2 w-48 bg-white/90 backdrop-blur-xl border border-black/5 rounded-2xl shadow-2xl z-[100] overflow-hidden"
+                              >
+                                <button 
+                                  onClick={(e) => startEditing(note, e)}
+                                  className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors border-b border-black/5"
+                                >
+                                  <Edit3 size={16} className="text-slate-400" />
+                                  <span>Edit text</span>
+                                </button>
+                                <button 
+                                  onClick={(e) => changeColor(note.id, e)}
+                                  className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors border-b border-black/5"
+                                >
+                                  <Palette size={16} className="text-slate-400" />
+                                  <span>Change spectrum</span>
+                                </button>
+                                <button 
+                                  onClick={(e) => triggerGallery(note.id, e)}
+                                  className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors border-b border-black/5"
+                                >
+                                  <ImageIcon size={16} className="text-slate-400" />
+                                  <span>Add gallery photo</span>
+                                </button>
+                                <button 
+                                  onClick={(e) => startVoiceRecording(e)}
+                                  className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors"
+                                >
+                                  <Mic size={16} className="text-red-500" />
+                                  <span>Voice Record</span>
+                                </button>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -377,7 +590,7 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50">
+              <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50 relative">
                 {messages.map((msg, i) => (
                   <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[85%] p-3 rounded-2xl text-sm ${
@@ -396,6 +609,27 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                
+                {/* Voice Recording Mask */}
+                {isRecording && (
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="absolute inset-0 bg-white/60 backdrop-blur-[2px] z-50 flex flex-col items-center justify-center text-red-500 font-bold"
+                  >
+                    <div className="bg-red-500/10 p-8 rounded-full mb-4 animate-pulse">
+                      <Mic size={48} className="animate-bounce" />
+                    </div>
+                    <span className="tracking-widest uppercase text-xs">Listening...</span>
+                    <button 
+                      onClick={() => recognitionRef.current?.stop()}
+                      className="mt-6 px-4 py-2 bg-red-500 text-white rounded-full text-xs hover:bg-red-600 transition-colors"
+                    >
+                      Stop Recording
+                    </button>
+                  </motion.div>
+                )}
+                
                 <div ref={chatEndRef} />
               </div>
 
@@ -405,12 +639,21 @@ export default function App() {
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                  placeholder="Ask Rainbow..."
-                  className="flex-1 bg-slate-100 border-none rounded-full px-4 py-2 text-sm focus:ring-1 focus:ring-black outline-none"
+                  placeholder={isRecording ? "Transcribing..." : "Ask Rainbow..."}
+                  disabled={isRecording}
+                  className="flex-1 bg-slate-100 border-none rounded-full px-4 py-2 text-sm focus:ring-1 focus:ring-black outline-none disabled:opacity-50"
                 />
                 <button
+                  onClick={(e) => startVoiceRecording(e)}
+                  disabled={isLoading}
+                  className={`p-2 rounded-full transition-all transform active:scale-90 ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-100 text-slate-400 hover:text-red-500'}`}
+                  title="Start voice recording"
+                >
+                  <Mic size={16} />
+                </button>
+                <button
                   onClick={handleSendMessage}
-                  disabled={isLoading || !chatInput.trim()}
+                  disabled={isLoading || !chatInput.trim() || isRecording}
                   className="p-2 bg-black text-white rounded-full disabled:opacity-30 disabled:cursor-not-allowed transform active:scale-95 transition-transform"
                 >
                   <Send size={16} />
@@ -419,15 +662,6 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
-
-        <button
-          onClick={() => setIsChatOpen(!isChatOpen)}
-          className={`p-4 rounded-full shadow-lg transition-all transform active:scale-90 ${
-            isChatOpen ? 'bg-white text-black' : 'bg-black text-white'
-          }`}
-        >
-          {isChatOpen ? <X size={24} /> : <MessageCircle size={24} />}
-        </button>
       </div>
 
       <style>{`

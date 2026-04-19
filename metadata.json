@@ -1,6 +1,6 @@
 {
   "name": "Rainbow notepad",
   "description": "A vibrant and minimalist notepad for organizing thoughts and ideas.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": []
 }
