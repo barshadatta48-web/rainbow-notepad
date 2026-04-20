@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Trash2, Edit3, Check, X, Palette, MessageCircle, Send, Sparkles, Loader2, Image as ImageIcon, Camera, MoreVertical, CheckCircle2, Mic, MicOff, Pencil, Eraser, ArrowLeft, Wand2, Bold, Type, Minus, Underline } from 'lucide-react';
+import { Plus, Trash2, Edit3, Check, X, Palette, MessageCircle, Send, Sparkles, Loader2, Image as ImageIcon, Camera, MoreVertical, CheckCircle2, Mic, MicOff, Pencil, Eraser, ArrowLeft, Wand2, Bold, Type, Minus, Underline, Hand, Maximize, StickyNote } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
 
@@ -72,11 +72,16 @@ export default function App() {
   const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [editorMode, setEditorMode] = useState<'text' | 'draw'>('text');
-  const [drawTool, setDrawTool] = useState<'pen' | 'eraser'>('pen');
+  const [drawTool, setDrawTool] = useState<'pen' | 'eraser' | 'pan'>('pen');
   const [drawColor, setDrawColor] = useState('#000000');
   
   const [isEditorMenuOpen, setIsEditorMenuOpen] = useState(false);
   
+  // Pan and Zoom state
+  const [stageScale, setStageScale] = useState(1);
+  const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
+  const [panState, setPanState] = useState<{ lastX: number, lastY: number, isPanning: boolean } | null>(null);
+
   // Voice state
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef<any>(null);
@@ -100,6 +105,7 @@ export default function App() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [micPermissionStatus, setMicPermissionStatus] = useState<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown');
 
   // Initialize Gemini
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -121,6 +127,18 @@ export default function App() {
       } catch (e) {
         console.error('Failed to parse templates', e);
       }
+    }
+
+    // Check microphone permission status initially
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'microphone' as any }).then(result => {
+        setMicPermissionStatus(result.state);
+        result.onchange = () => {
+          setMicPermissionStatus(result.state);
+        };
+      }).catch(err => {
+        console.warn("Permissions API not fully supported for microphone query:", err);
+      });
     }
   }, []);
 
@@ -221,6 +239,10 @@ export default function App() {
     setEditFontSize(note.fontSize || 48);
     setOpenMenuId(null);
     setIsEditorMenuOpen(false);
+    
+    // Reset canvas view
+    setStageScale(1);
+    setStagePos({ x: 0, y: 0 });
   };
 
   const startDrawing = (note: Note, e?: React.MouseEvent) => {
@@ -231,6 +253,10 @@ export default function App() {
     setEditFontSize(note.fontSize || 48);
     setOpenMenuId(null);
     setIsEditorMenuOpen(false);
+    
+    // Reset canvas view
+    setStageScale(1);
+    setStagePos({ x: 0, y: 0 });
   };
 
   const saveNote = () => {
@@ -352,19 +378,48 @@ export default function App() {
     setOpenMenuId(openMenuId === id ? null : id);
   };
 
-  const startVoiceRecording = (target: 'chat' | 'note' = 'chat', e?: React.MouseEvent) => {
+  const startVoiceRecording = async (target: 'chat' | 'note' = 'chat', e?: React.MouseEvent) => {
     e?.stopPropagation();
+    
     if (isRecording) {
       recognitionRef.current?.stop();
+      setIsRecording(false);
       return;
     }
 
-    if (!('webkitSpeechRecognition' in window)) {
-      alert("Speech recognition is not supported in this browser.");
+    // 1. Check for basic support
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Voice recognition is not supported in this browser. Please try Chrome, Edge, or Safari.");
       return;
     }
 
-    const recognition = new window.webkitSpeechRecognition();
+    // 2. Preliminary Permission Check & Request
+    // We do this to ensure we have permission. If we already have it, this is silent.
+    // If not, it triggers the prompt.
+    if (micPermissionStatus !== 'granted') {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(track => track.stop());
+        setMicPermissionStatus('granted');
+      } catch (err: any) {
+        console.error("Microphone permission denied or error:", err);
+        const errName = err.name || '';
+        const errMsg = err.message || '';
+        
+        if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError' || errMsg.toLowerCase().includes('denied')) {
+          setMicPermissionStatus('denied');
+          alert("Microphone access is blocked. \n\nTo fix this: \n1. Click the Lock icon 🔒 in the address bar.\n2. Set 'Microphone' to ALLOW.\n3. Refresh the page.\n\nNOTE: If you are in an iframe, try opening the app in a NEW TAB.");
+        } else {
+          alert(`Microphone error: ${errMsg || errName || 'Unknown error'}.`);
+        }
+        return;
+      }
+    }
+
+    // 3. Initialize and start Speech Recognition
+    // We try to start it immediately to satisfy gesture requirements
+    const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
@@ -400,12 +455,27 @@ export default function App() {
     };
 
     recognition.onerror = (event: any) => {
-      console.error("Speech recognition error:", event.error);
+      console.error("Speech recognition error handle:", event.error);
       setIsRecording(false);
+      
+      if (event.error === 'not-allowed') {
+        setMicPermissionStatus('denied');
+        alert("Voice recognition blocked. Please check site permissions in your browser settings.");
+      } else if (event.error === 'no-speech') {
+        // Silent end
+      } else {
+        alert(`Voice recognition error: ${event.error}.`);
+      }
     };
 
     recognitionRef.current = recognition;
-    recognition.start();
+    
+    try {
+      recognition.start();
+    } catch (err) {
+      console.error("Error starting recognition:", err);
+      setIsRecording(false);
+    }
   };
 
   const toggleDrawing = (id: string, e?: React.MouseEvent) => {
@@ -430,31 +500,138 @@ export default function App() {
     return () => observer.disconnect();
   }, [activeNoteId, isDrawing]);
 
-  const handleMouseDown = (e: any) => {
-    if (!activeNoteId) return;
-    const pos = e.target.getStage()?.getPointerPosition();
+   const handleMouseDown = (e: any) => {
+    if (!activeNoteId || drawTool === 'pan') return;
+    
+    // Only draw if we are not multi-touching
+    if (e.evt && e.evt.touches && e.evt.touches.length > 1) return;
+
+    const stage = e.target.getStage();
+    const pos = stage.getPointerPosition();
+    
     if (pos) {
+      // Calculate position relative to stage transforms
+      const transform = stage.getAbsoluteTransform().copy().invert();
+      const relativePos = transform.point(pos);
+      
       const note = notes.find(n => n.id === activeNoteId);
       const newLines = [...(note?.drawingLines || []), { 
         tool: drawTool, 
-        points: [pos.x, pos.y], 
+        points: [relativePos.x, relativePos.y], 
         color: drawColor,
-        strokeWidth: drawTool === 'eraser' ? 40 : 4
+        strokeWidth: drawTool === 'eraser' ? 40 / stageScale : 4 / stageScale
       }];
       updateDrawing(activeNoteId, newLines);
     }
   };
 
   const handleMouseMove = (e: any) => {
-    if (e.evt.buttons !== 1 || !activeNoteId) return;
-    const pos = e.target.getStage()?.getPointerPosition();
-    const note = notes.find(n => n.id === activeNoteId);
-    if (pos && note?.drawingLines) {
-      const lastLine = { ...note.drawingLines[note.drawingLines.length - 1] };
-      lastLine.points = lastLine.points.concat([pos.x, pos.y]);
-      const newLines = note.drawingLines.slice(0, -1).concat([lastLine]);
-      updateDrawing(activeNoteId, newLines);
+    if (!activeNoteId || drawTool === 'pan') return;
+    
+    // Check if we are drawing (left click)
+    if (e.evt.buttons === 1) {
+      const stage = e.target.getStage();
+      const pos = stage.getPointerPosition();
+      const note = notes.find(n => n.id === activeNoteId);
+      
+      if (pos && note?.drawingLines) {
+        const transform = stage.getAbsoluteTransform().copy().invert();
+        const relativePos = transform.point(pos);
+        
+        const lastLine = { ...note.drawingLines[note.drawingLines.length - 1] };
+        lastLine.points = lastLine.points.concat([relativePos.x, relativePos.y]);
+        const newLines = note.drawingLines.slice(0, -1).concat([lastLine]);
+        updateDrawing(activeNoteId, newLines);
+      }
     }
+  };
+
+  const handleWheel = (e: any) => {
+    e.evt.preventDefault();
+    const stage = e.target.getStage();
+    const oldScale = stage.scaleX();
+    const pointer = stage.getPointerPosition();
+
+    const mousePointTo = {
+      x: (pointer.x - stage.x()) / oldScale,
+      y: (pointer.y - stage.y()) / oldScale,
+    };
+
+    const speed = 0.05;
+    const newScale = e.evt.deltaY > 0 ? oldScale * (1 - speed) : oldScale * (1 + speed);
+
+    setStageScale(newScale);
+    setStagePos({
+      x: pointer.x - mousePointTo.x * newScale,
+      y: pointer.y - mousePointTo.y * newScale,
+    });
+  };
+
+  const getDistance = (p1: any, p2: any) => {
+    return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+  };
+
+  const getCenter = (p1: any, p2: any) => {
+    return {
+      x: (p1.x + p2.x) / 2,
+      y: (p1.y + p2.y) / 2,
+    };
+  };
+
+  let lastDist = 0;
+  let lastCenter: any = null;
+
+  const handleTouchMove = (e: any) => {
+    e.evt.preventDefault();
+    const touch1 = e.evt.touches[0];
+    const touch2 = e.evt.touches[1];
+
+    if (touch1 && touch2) {
+      const stage = e.target.getStage();
+      if (stage.isDragging()) {
+        stage.stopDrag();
+      }
+
+      const p1 = { x: touch1.clientX, y: touch1.clientY };
+      const p2 = { x: touch2.clientX, y: touch2.clientY };
+
+      if (!lastCenter) {
+        lastCenter = getCenter(p1, p2);
+        return;
+      }
+
+      const newCenter = getCenter(p1, p2);
+      const dist = getDistance(p1, p2);
+
+      if (!lastDist) {
+        lastDist = dist;
+      }
+
+      // Local variables for current transformation to calculate new ones
+      const currScale = stage.scaleX();
+      const currPos = { x: stage.x(), y: stage.y() };
+
+      const pointTo = {
+        x: (newCenter.x - currPos.x) / currScale,
+        y: (newCenter.y - currPos.y) / currScale,
+      };
+
+      const newScale = currScale * (dist / lastDist);
+
+      setStageScale(newScale);
+      setStagePos({
+        x: newCenter.x - pointTo.x * newScale,
+        y: newCenter.y - pointTo.y * newScale,
+      });
+
+      lastDist = dist;
+      lastCenter = newCenter;
+    }
+  };
+
+  const handleTouchEnd = () => {
+    lastDist = 0;
+    lastCenter = null;
   };
 
   const handleMouseUp = () => {
@@ -517,7 +694,6 @@ export default function App() {
       {/* Background Theme Logo */}
       <div className="fixed inset-0 flex items-center justify-center pointer-events-none z-0 opacity-[0.05]">
         <div className="relative">
-          <Sparkles size={600} className="text-black" />
           <div className="absolute inset-0 flex items-center justify-center">
              <span className="text-8xl font-black tracking-tighter uppercase whitespace-nowrap rotate-[-15deg]">Rainbow</span>
           </div>
@@ -527,11 +703,35 @@ export default function App() {
       <header className="fixed top-0 left-0 right-0 z-50 px-[50px] py-[30px] flex items-center justify-between border-b-2 border-black/5 bg-white/90 backdrop-blur-xl">
         <div className="flex items-center gap-3">
           <div className="bg-gradient-to-tr from-red-500 via-yellow-500 to-purple-500 p-2 rounded-xl shadow-lg">
-             <Sparkles className="text-white" size={24} />
+             <StickyNote className="text-white" size={24} />
           </div>
           <h1 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-red-600 via-yellow-600 to-purple-600 bg-clip-text text-transparent">
             Rainbow notepad
           </h1>
+          
+          {micPermissionStatus === 'denied' && (
+            <motion.div 
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              className="ml-6 flex items-center gap-2 px-4 py-2 bg-red-50 border border-red-100 rounded-full text-red-500 text-xs font-bold shadow-sm cursor-help group relative"
+            >
+              <MicOff size={14} />
+              <span>Mic Blocked</span>
+              
+              <div className="absolute top-full left-0 mt-2 w-64 p-4 bg-white border border-black/10 rounded-2xl shadow-2xl text-slate-600 font-medium leading-relaxed opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-[1001]">
+                <p className="mb-2 uppercase text-[10px] font-black text-red-500 tracking-wider">Troubleshooting</p>
+                <p className="mb-2">The browser has blocked microphone access.</p>
+                <ol className="list-decimal list-inside space-y-1">
+                  <li>Click the Lock 🔒 in address bar</li>
+                  <li>Enable Microphone</li>
+                  <li>Refresh the page</li>
+                </ol>
+                <div className="mt-3 pt-3 border-t border-black/5 text-blue-600 text-[10px] uppercase tracking-wider">
+                  Tip: Try opening in a new tab
+                </div>
+              </div>
+            </motion.div>
+          )}
         </div>
         
         <div className="flex items-center gap-[15px]">
@@ -541,17 +741,9 @@ export default function App() {
             className="p-3 rounded-2xl transition-all hover:bg-yellow-50 text-slate-400 hover:text-yellow-600 group/tt"
             title="Note Templates"
           >
-            <Sparkles size={22} />
+            <Type size={22} />
           </button>
           
-          <button
-            onClick={() => setIsChatOpen(true)}
-            className="p-3 rounded-2xl transition-all hover:bg-blue-50 text-slate-400 hover:text-blue-600"
-            title="AI Chat"
-          >
-            <MessageCircle size={22} />
-          </button>
-
           <button
             onClick={() => addNote()}
             className="group/btn px-6 py-2.5 bg-black text-white rounded-[20px] text-sm font-bold flex items-center gap-2 transition-all hover:scale-105 hover:bg-slate-800 active:scale-95 shadow-xl ml-2"
@@ -644,13 +836,6 @@ export default function App() {
                     
                     <div className="flex items-center justify-end gap-3 pt-4 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 relative pointer-events-auto">
                       <button
-                        onClick={(e) => startEditing(note, e)}
-                        className="p-2.5 rounded-xl bg-white/20 hover:bg-white text-[#222] transition-colors border border-black/10"
-                        title="Edit"
-                      >
-                        <Edit3 size={18} />
-                      </button>
-                      <button
                         onClick={(e) => changeColor(note.id, e)}
                         className="p-2.5 rounded-xl bg-white/20 hover:bg-white text-purple-600 transition-colors border border-black/10"
                         title="Warp Spectrum"
@@ -729,6 +914,20 @@ export default function App() {
                       >
                         <Eraser size={18} />
                       </button>
+                      <button
+                        onClick={() => setDrawTool('pan')}
+                        className={`p-2.5 rounded-xl transition-all ${drawTool === 'pan' ? 'bg-black text-white' : 'hover:bg-black/5 text-slate-500'}`}
+                        title="Pan Tool"
+                      >
+                        <Hand size={18} />
+                      </button>
+                      <button
+                        onClick={() => { setStageScale(1); setStagePos({ x: 0, y: 0 }); }}
+                        className="p-2.5 rounded-xl hover:bg-black/5 text-slate-400 transition-all"
+                        title="Reset View"
+                      >
+                        <Maximize size={18} />
+                      </button>
                       <div className="w-px h-6 bg-black/10 mx-1" />
                       <div className="flex items-center gap-1.5 px-0.5">
                         {['#000000', '#ef4444', '#3b82f6', '#10b981', '#f59e0b'].map(c => (
@@ -757,10 +956,16 @@ export default function App() {
 
                 <button
                   onClick={(e) => startVoiceRecording('note', e)}
-                  className={`p-3 rounded-2xl transition-all ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'hover:bg-slate-50 text-slate-400 hover:text-red-500'}`}
-                  title="Voice to Note"
+                  className={`p-3 rounded-2xl transition-all ${
+                    isRecording 
+                      ? 'bg-red-500 text-white animate-pulse' 
+                      : micPermissionStatus === 'denied'
+                        ? 'hover:bg-red-50 text-red-300'
+                        : 'hover:bg-slate-50 text-slate-400 hover:text-red-500'
+                  }`}
+                  title={micPermissionStatus === 'denied' ? "Microphone access blocked - check browser settings" : "Voice to Note"}
                 >
-                  <Mic size={22} />
+                  {micPermissionStatus === 'denied' ? <MicOff size={22} /> : <Mic size={22} />}
                 </button>
 
                 <button
@@ -892,12 +1097,30 @@ export default function App() {
                     <Stage
                       width={canvasSize.width}
                       height={canvasSize.height}
+                      scaleX={stageScale}
+                      scaleY={stageScale}
+                      x={stagePos.x}
+                      y={stagePos.y}
+                      draggable={!isDrawing || drawTool === 'pan'}
+                      onDragEnd={(e) => {
+                        setStagePos({ x: e.target.x(), y: e.target.y() });
+                      }}
                       onMouseDown={handleMouseDown}
                       onMouseMove={handleMouseMove}
                       onMouseUp={handleMouseUp}
                       onTouchStart={handleMouseDown}
-                      onTouchMove={handleMouseMove}
-                      onTouchEnd={handleMouseUp}
+                      onTouchMove={(e) => {
+                        if (e.evt.touches.length > 1) {
+                          handleTouchMove(e);
+                        } else {
+                          handleMouseMove(e);
+                        }
+                      }}
+                      onTouchEnd={() => {
+                        handleTouchEnd();
+                        handleMouseUp();
+                      }}
+                      onWheel={handleWheel}
                     >
                       <Layer>
                         {(notes.find(n => n.id === activeNoteId)?.drawingLines || []).map((line, i) => (
@@ -996,9 +1219,16 @@ export default function App() {
                         <button
                           onClick={(e) => startVoiceRecording('chat', e)}
                           disabled={isLoading}
-                          className={`p-4 rounded-2xl transition-all transform active:scale-95 ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-100 text-slate-400 hover:text-red-500'}`}
+                          className={`p-4 rounded-2xl transition-all transform active:scale-95 ${
+                            isRecording 
+                              ? 'bg-red-500 text-white animate-pulse' 
+                              : micPermissionStatus === 'denied'
+                                ? 'bg-red-50 text-red-300'
+                                : 'bg-slate-100 text-slate-400 hover:text-red-500'
+                          }`}
+                          title={micPermissionStatus === 'denied' ? "Microphone access blocked" : "Record voice"}
                         >
-                          <Mic size={20} />
+                          {micPermissionStatus === 'denied' ? <MicOff size={20} /> : <Mic size={20} />}
                         </button>
                       </div>
                       <button
@@ -1094,113 +1324,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Floating Chat Box (Dashboard Only) */}
-      {!activeNoteId && (
-        <div className="fixed bottom-8 right-8 z-[100] flex flex-col items-end">
-          <AnimatePresence>
-            {isChatOpen && (
-              <motion.div
-                initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 20, scale: 0.95 }}
-                className="w-80 sm:w-96 h-[500px] bg-white rounded-2xl shadow-2xl border border-black/5 flex flex-col mb-4 overflow-hidden"
-              >
-                <div className="p-4 bg-black text-white flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Sparkles size={18} className="text-yellow-400" />
-                    <span className="font-semibold">Rainbow AI</span>
-                  </div>
-                  <button onClick={() => setIsChatOpen(false)} className="p-1 hover:bg-white/10 rounded-full">
-                    <X size={20} />
-                  </button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50 relative">
-                  {messages.map((msg, i) => (
-                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[85%] p-3 rounded-2xl text-sm ${
-                        msg.role === 'user' 
-                          ? 'bg-black text-white rounded-tr-none' 
-                          : 'bg-white border border-black/5 rounded-tl-none shadow-sm'
-                      }`}>
-                        {msg.content}
-                      </div>
-                    </div>
-                  ))}
-                  {isLoading && (
-                    <div className="flex justify-start">
-                      <div className="bg-white border border-black/5 p-3 rounded-2xl rounded-tl-none shadow-sm">
-                        <Loader2 className="animate-spin text-slate-400" size={16} />
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* Voice Recording Mask */}
-                  {isRecording && (
-                    <motion.div 
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      className="absolute inset-0 bg-white/60 backdrop-blur-[2px] z-50 flex flex-col items-center justify-center text-red-500 font-bold"
-                    >
-                      <div className="bg-red-500/10 p-8 rounded-full mb-4 animate-pulse">
-                        <Mic size={48} className="animate-bounce" />
-                      </div>
-                      <span className="tracking-widest uppercase text-xs">Listening...</span>
-                      <button 
-                        onClick={() => recognitionRef.current?.stop()}
-                        className="mt-6 px-4 py-2 bg-red-500 text-white rounded-full text-xs hover:bg-red-600 transition-colors"
-                      >
-                        Stop Recording
-                      </button>
-                    </motion.div>
-                  )}
-                  
-                  <div ref={chatEndRef} />
-                </div>
-
-                <div className="p-4 bg-white border-t border-black/5 flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                    placeholder={isRecording ? "Transcribing..." : "Ask Rainbow..."}
-                    disabled={isRecording}
-                    className="flex-1 bg-slate-100 border-none rounded-full px-4 py-2 text-sm focus:ring-1 focus:ring-black outline-none disabled:opacity-50"
-                  />
-                  <button
-                    onClick={(e) => startVoiceRecording('chat', e)}
-                    disabled={isLoading}
-                    className={`p-2 rounded-full transition-all transform active:scale-90 ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-100 text-slate-400 hover:text-red-500'}`}
-                    title="Start voice recording"
-                  >
-                    <Mic size={16} />
-                  </button>
-                  <button
-                    onClick={handleSendMessage}
-                    disabled={isLoading || !chatInput.trim() || isRecording}
-                    className="p-2 bg-black text-white rounded-full disabled:opacity-30 disabled:cursor-not-allowed transform active:scale-95 transition-transform"
-                  >
-                    <Send size={16} />
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <button
-            onClick={() => setIsChatOpen(!isChatOpen)}
-            className="w-16 h-16 bg-black text-white rounded-full shadow-2xl flex items-center justify-center hover:scale-110 active:scale-90 transition-all group relative"
-          >
-            {isChatOpen ? <X size={24} /> : <MessageCircle size={24} />}
-            {!isChatOpen && (
-              <span className="absolute right-20 bg-white text-black px-4 py-2 rounded-xl text-xs font-bold border border-black/5 shadow-xl whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                Need help? Ask AI
-              </span>
-            )}
-          </button>
-        </div>
-      )}
+      {/* Full Screen Editor Overlay */}
 
       <style>{`
         .note-content b, .note-content strong { font-weight: 700; }
