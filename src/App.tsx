@@ -4,9 +4,18 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Trash2, Edit3, Check, X, Palette, MessageCircle, Send, Sparkles, Loader2, Image as ImageIcon, Camera, MoreVertical, CheckCircle2, Mic, MicOff } from 'lucide-react';
+import { Plus, Trash2, Edit3, Check, X, Palette, MessageCircle, Send, Sparkles, Loader2, Image as ImageIcon, Camera, MoreVertical, CheckCircle2, Mic, MicOff, Pencil, Eraser, ArrowLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
+
+import { Stage, Layer, Line as KonvaLine } from 'react-konva';
+
+interface DrawingLine {
+  tool: string;
+  points: number[];
+  color: string;
+  strokeWidth: number;
+}
 
 interface Note {
   id: string;
@@ -15,6 +24,16 @@ interface Note {
   rotation: number;
   image?: string;
   completed?: boolean;
+  drawingLines?: DrawingLine[];
+}
+
+interface Template {
+  id: string;
+  name: string;
+  text: string;
+  color: string;
+  drawingLines?: DrawingLine[];
+  image?: string;
 }
 
 interface ChatMessage {
@@ -40,14 +59,26 @@ const COLORS = [
 
 export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [isTemplatesModalOpen, setIsTemplatesModalOpen] = useState(false);
   const [editText, setEditText] = useState('');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  const [editorMode, setEditorMode] = useState<'text' | 'draw'>('text');
+  const [drawTool, setDrawTool] = useState<'pen' | 'eraser'>('pen');
+  const [drawColor, setDrawColor] = useState('#000000');
+  
+  const [isEditorMenuOpen, setIsEditorMenuOpen] = useState(false);
   
   // Voice state
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef<any>(null);
+
+  // Drawing state
+  const [isDrawing, setIsDrawing] = useState(false);
+  const drawingId = isDrawing ? activeNoteId : null;
+  const editingId = !isDrawing ? activeNoteId : null;
 
   // Ref for hidden file input
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -61,11 +92,13 @@ export default function App() {
   ]);
   const [isLoading, setIsLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
   // Initialize Gemini
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-  // Load notes from localStorage
+  // Load notes and templates from localStorage
   useEffect(() => {
     const savedNotes = localStorage.getItem('stickie-notes-rainbow');
     if (savedNotes) {
@@ -75,12 +108,24 @@ export default function App() {
         console.error('Failed to parse notes from local storage', e);
       }
     }
+    const savedTemplates = localStorage.getItem('stickie-templates-rainbow');
+    if (savedTemplates) {
+      try {
+        setTemplates(JSON.parse(savedTemplates));
+      } catch (e) {
+        console.error('Failed to parse templates', e);
+      }
+    }
   }, []);
 
-  // Save notes to localStorage
+  // Save to localStorage
   useEffect(() => {
     localStorage.setItem('stickie-notes-rainbow', JSON.stringify(notes));
   }, [notes]);
+
+  useEffect(() => {
+    localStorage.setItem('stickie-templates-rainbow', JSON.stringify(templates));
+  }, [templates]);
 
   // Scroll chat to bottom
   useEffect(() => {
@@ -97,52 +142,95 @@ export default function App() {
     return () => window.removeEventListener('click', handleClickOutside);
   }, []);
 
-  const addNote = (text = '', image?: string) => {
+  const addNote = (text = '', image?: string, drawingLines?: DrawingLine[], color?: string) => {
     const newNote: Note = {
       id: crypto.randomUUID(),
       text,
       image,
+      drawingLines,
       completed: false,
-      color: COLORS[notes.length % COLORS.length], // Cyclic rainbow colors
+      color: color || COLORS[notes.length % COLORS.length], // Cyclic rainbow colors
       rotation: 0,
     };
     setNotes([newNote, ...notes]);
-    if (!text && !image) {
-      setEditingId(newNote.id);
+    if (!text && !image && !drawingLines) {
+      setActiveNoteId(newNote.id);
+      setIsDrawing(false);
       setEditText('');
     }
+  };
+
+  const saveAsTemplate = (note: Note) => {
+    const name = prompt("Enter a name for this template:");
+    if (!name) return;
+
+    const newTemplate: Template = {
+      id: crypto.randomUUID(),
+      name,
+      text: note.text,
+      color: note.color,
+      drawingLines: note.drawingLines,
+      image: note.image
+    };
+    setTemplates([...templates, newTemplate]);
+    setOpenMenuId(null);
+    setIsEditorMenuOpen(false);
+  };
+
+  const applyTemplate = (template: Template) => {
+    addNote(template.text, template.image, template.drawingLines, template.color);
+    setIsTemplatesModalOpen(false);
+    setIsHeaderMenuOpen(false);
+  };
+
+  const deleteTemplate = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setTemplates(templates.filter(t => t.id !== id));
   };
 
   const deleteNote = (id: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
     setNotes(notes.filter((n) => n.id !== id));
-    if (editingId === id) {
-      setEditingId(null);
+    if (activeNoteId === id) {
+      setActiveNoteId(null);
     }
     setOpenMenuId(null);
   };
 
   const startEditing = (note: Note, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    setEditingId(note.id);
+    setActiveNoteId(note.id);
+    setIsDrawing(false);
     setEditText(note.text);
     setOpenMenuId(null);
+    setIsEditorMenuOpen(false);
+  };
+
+  const startDrawing = (note: Note, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setActiveNoteId(note.id);
+    setIsDrawing(true);
+    setEditText(note.text);
+    setOpenMenuId(null);
+    setIsEditorMenuOpen(false);
   };
 
   const saveNote = () => {
-    if (editingId) {
+    if (activeNoteId) {
       setNotes(
         notes.map((n) =>
-          n.id === editingId ? { ...n, text: editText } : n
+          n.id === activeNoteId ? { ...n, text: editText } : n
         )
       );
-      setEditingId(null);
+      setActiveNoteId(null);
+      setIsEditorMenuOpen(false);
     }
   };
 
   const toggleComplete = (id: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
     setNotes(notes.map(n => n.id === id ? { ...n, completed: !n.completed } : n));
+    setOpenMenuId(null);
   };
 
   const changeColor = (id: string, e?: React.MouseEvent) => {
@@ -197,7 +285,7 @@ export default function App() {
     setOpenMenuId(openMenuId === id ? null : id);
   };
 
-  const startVoiceRecording = (e?: React.MouseEvent) => {
+  const startVoiceRecording = (target: 'chat' | 'note' = 'chat', e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (isRecording) {
       recognitionRef.current?.stop();
@@ -216,8 +304,10 @@ export default function App() {
 
     recognition.onstart = () => {
       setIsRecording(true);
-      setIsChatOpen(true);
-      setIsHeaderMenuOpen(false);
+      if (target === 'chat') {
+        setIsChatOpen(true);
+        setIsHeaderMenuOpen(false);
+      }
     };
 
     recognition.onresult = (event: any) => {
@@ -225,7 +315,12 @@ export default function App() {
         .map((result: any) => result[0])
         .map((result: any) => result.transcript)
         .join('');
-      setChatInput(transcript);
+      
+      if (target === 'chat') {
+        setChatInput(transcript);
+      } else {
+        setEditText(prev => prev + (prev.length > 0 ? ' ' : '') + transcript);
+      }
     };
 
     recognition.onend = () => {
@@ -239,6 +334,69 @@ export default function App() {
 
     recognitionRef.current = recognition;
     recognition.start();
+  };
+
+  const toggleDrawing = (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (activeNoteId === id && isDrawing) {
+      setIsDrawing(false);
+    } else {
+      setActiveNoteId(id);
+      setIsDrawing(true);
+      setOpenMenuId(null);
+    }
+  };
+
+  // Resize observer for drawing canvas
+  useEffect(() => {
+    if (!canvasContainerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect;
+      setCanvasSize({ width, height });
+    });
+    observer.observe(canvasContainerRef.current);
+    return () => observer.disconnect();
+  }, [activeNoteId, isDrawing]);
+
+  const handleMouseDown = (e: any) => {
+    if (!activeNoteId) return;
+    const pos = e.target.getStage()?.getPointerPosition();
+    if (pos) {
+      const note = notes.find(n => n.id === activeNoteId);
+      const newLines = [...(note?.drawingLines || []), { 
+        tool: drawTool, 
+        points: [pos.x, pos.y], 
+        color: drawColor,
+        strokeWidth: drawTool === 'eraser' ? 40 : 4
+      }];
+      updateDrawing(activeNoteId, newLines);
+    }
+  };
+
+  const handleMouseMove = (e: any) => {
+    if (e.evt.buttons !== 1 || !activeNoteId) return;
+    const pos = e.target.getStage()?.getPointerPosition();
+    const note = notes.find(n => n.id === activeNoteId);
+    if (pos && note?.drawingLines) {
+      const lastLine = { ...note.drawingLines[note.drawingLines.length - 1] };
+      lastLine.points = lastLine.points.concat([pos.x, pos.y]);
+      const newLines = note.drawingLines.slice(0, -1).concat([lastLine]);
+      updateDrawing(activeNoteId, newLines);
+    }
+  };
+
+  const handleMouseUp = () => {
+    // End of stroke
+  };
+
+  const updateDrawing = (id: string, lines: DrawingLine[]) => {
+    setNotes(prev => prev.map(n => n.id === id ? { ...n, drawingLines: lines } : n));
+  };
+
+  const clearDrawing = (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setNotes(prev => prev.map(n => n.id === id ? { ...n, drawingLines: [] } : n));
+    setOpenMenuId(null);
   };
 
   const handleSendMessage = async () => {
@@ -304,55 +462,30 @@ export default function App() {
         </div>
         
         <div className="flex items-center gap-[15px]">
+          {/* Header Action Buttons (Refined) */}
+          <button
+            onClick={() => setIsTemplatesModalOpen(true)}
+            className="p-3 rounded-2xl transition-all hover:bg-yellow-50 text-slate-400 hover:text-yellow-600 group/tt"
+            title="Note Templates"
+          >
+            <Sparkles size={22} />
+          </button>
+          
+          <button
+            onClick={() => setIsChatOpen(true)}
+            className="p-3 rounded-2xl transition-all hover:bg-blue-50 text-slate-400 hover:text-blue-600"
+            title="AI Chat"
+          >
+            <MessageCircle size={22} />
+          </button>
+
           <button
             onClick={() => addNote()}
-            className="group/btn px-6 py-2.5 bg-black text-white rounded-[20px] text-sm font-bold flex items-center gap-2 transition-all hover:scale-105 hover:bg-slate-800 active:scale-95 shadow-xl"
+            className="group/btn px-6 py-2.5 bg-black text-white rounded-[20px] text-sm font-bold flex items-center gap-2 transition-all hover:scale-105 hover:bg-slate-800 active:scale-95 shadow-xl ml-2"
           >
             <Plus size={18} />
             New Note
           </button>
-
-          {/* Header Three-dot Menu */}
-          <div className="relative">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsHeaderMenuOpen(!isHeaderMenuOpen);
-              }}
-              className={`p-2 rounded-full transition-all hover:bg-black/5 ${isHeaderMenuOpen ? 'bg-black text-white' : 'text-slate-600'}`}
-            >
-              <MoreVertical size={24} />
-            </button>
-
-            <AnimatePresence>
-              {isHeaderMenuOpen && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                  className="absolute top-full right-0 mt-4 w-56 bg-white/90 backdrop-blur-2xl border border-black/5 rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.1)] z-[100] overflow-hidden p-2"
-                >
-                  <button
-                    onClick={() => {}}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-black/5 rounded-xl transition-colors text-slate-700"
-                  >
-                    <Palette size={18} className="text-purple-500" />
-                    Theme
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsChatOpen(true);
-                      setIsHeaderMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold hover:bg-black/5 rounded-xl transition-colors text-slate-700"
-                  >
-                    <MessageCircle size={18} className="text-blue-500" />
-                    AI Chat Assistant
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
         </div>
       </header>
 
@@ -375,15 +508,16 @@ export default function App() {
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.8, y: -20 }}
                   whileHover={{ y: -5, transition: { duration: 0.2 } }}
+                  onClick={() => startEditing(note)}
                   className={`
                     relative min-h-[400px] p-[35px] flex flex-col items-start
                     shadow-[0_10px_20px_rgba(0,0,0,0.06)] hover:shadow-[0_25px_50px_rgba(0,0,0,0.12)]
-                    transition-all duration-300 note-corner-fold
+                    transition-all duration-300 note-corner-fold cursor-pointer group
                     ${note.color}
                     ${note.completed ? 'opacity-80 scale-[0.98]' : ''}
                   `}
                 >
-                  <div className="note-header w-full flex justify-between items-center text-[12px] uppercase tracking-[2px] font-black opacity-40 mb-[25px]">
+                  <div className="note-header w-full flex justify-between items-center text-[12px] uppercase tracking-[2px] font-black opacity-40 mb-[25px] pointer-events-none">
                     <div className="flex items-center gap-1">
                        <div className="w-2 h-2 rounded-full bg-white/50" />
                        <span>{new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit' })}</span>
@@ -392,176 +526,364 @@ export default function App() {
                   </div>
 
                   {note.image && (
-                    <div className="relative w-full mb-4 group/image">
+                    <div className="relative w-full mb-4 pointer-events-none">
                       <img 
                         src={note.image} 
                         alt="Attached photo" 
                         className="w-full aspect-video object-cover rounded-xl shadow-md border border-black/5" 
                         referrerPolicy="no-referrer"
                       />
-                      <button 
-                        onClick={() => removeImage(note.id)}
-                        className="absolute top-2 right-2 p-1 bg-black/60 text-white rounded-full opacity-0 group-hover/image:opacity-100 transition-opacity hover:bg-black"
+                    </div>
+                  )}
+
+                  <div className="w-full h-full flex flex-col relative pointer-events-none">
+                    {/* Drawing Layer Preview */}
+                    {(note.drawingLines && note.drawingLines.length > 0) && (
+                      <div className="absolute inset-0 z-0">
+                        <Stage width={300} height={400} className="w-full h-full">
+                          <Layer>
+                            {note.drawingLines.map((line, i) => (
+                              <KonvaLine
+                                key={i}
+                                points={line.points}
+                                stroke={line.color}
+                                strokeWidth={line.strokeWidth}
+                                tension={0.5}
+                                lineCap="round"
+                                lineJoin="round"
+                                globalCompositeOperation={
+                                  line.tool === 'eraser' ? 'destination-out' : 'source-over'
+                                }
+                              />
+                            ))}
+                          </Layer>
+                        </Stage>
+                      </div>
+                    )}
+
+                    <div className={`flex-1 w-full overflow-hidden text-[22px] font-medium leading-[1.4] text-[#222] whitespace-pre-wrap relative z-10 ${note.completed ? 'line-through opacity-40' : ''}`}>
+                      {note.text || (!note.image && !note.drawingLines?.length && <span className="opacity-20 italic">Empty note...</span>)}
+                    </div>
+                    
+                    <div className="flex items-center justify-end gap-3 pt-4 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 relative pointer-events-auto">
+                      <button
+                        onClick={(e) => startEditing(note, e)}
+                        className="p-2.5 rounded-xl bg-white/20 hover:bg-white text-[#222] transition-colors border border-black/10"
+                        title="Edit"
                       >
-                        <X size={14} />
+                        <Edit3 size={18} />
+                      </button>
+                      <button
+                        onClick={(e) => changeColor(note.id, e)}
+                        className="p-2.5 rounded-xl bg-white/20 hover:bg-white text-purple-600 transition-colors border border-black/10"
+                        title="Warp Spectrum"
+                      >
+                        <Palette size={18} />
+                      </button>
+                      <button
+                        onClick={(e) => deleteNote(note.id, e)}
+                        className="p-2.5 rounded-xl bg-white/20 hover:bg-red-500 hover:text-white text-red-500 transition-colors border border-black/10"
+                        title="Delete"
+                      >
+                        <Trash2 size={18} />
                       </button>
                     </div>
-                  )}
-
-                  {editingId === note.id ? (
-                    <div className="w-full h-full flex flex-col">
-                      <textarea
-                        autoFocus
-                        value={editText}
-                        onChange={(e) => setEditText(e.target.value)}
-                        placeholder="Start typing..."
-                        className="flex-1 w-full bg-transparent resize-none focus:outline-none text-[18px] leading-[1.6] text-[#333] placeholder:opacity-30"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                            saveNote();
-                          }
-                          if (e.key === 'Escape') {
-                            setEditingId(null);
-                          }
-                        }}
-                      />
-                      <div className="flex items-center justify-between pt-4">
-                        <span className="text-[10px] opacity-40 italic">Ctrl+Enter to save</span>
-                        <div className="flex items-center gap-2 relative">
-                          <button onClick={() => setEditingId(null)} className="p-2 hover:bg-black/5 rounded-full transition-colors"><X size={16} /></button>
-                          <button onClick={saveNote} className="p-2 bg-black text-white rounded-full transition-transform active:scale-90"><Check size={16} /></button>
-                          
-                          {/* Three-dot in editing mode */}
-                          <div className="relative">
-                            <button 
-                              onClick={(e) => toggleMenu(note.id, e)}
-                              className="p-2 hover:bg-black/5 rounded-full transition-colors"
-                            >
-                              <MoreVertical size={16} />
-                            </button>
-                            <AnimatePresence>
-                              {openMenuId === note.id && (
-                                <motion.div 
-                                  initial={{ opacity: 0, scale: 0.9, y: 10 }}
-                                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                                  exit={{ opacity: 0, scale: 0.9, y: 10 }}
-                                  className="absolute bottom-full right-0 mb-2 w-48 bg-white/90 backdrop-blur-xl border border-black/5 rounded-2xl shadow-2xl z-[100] overflow-hidden"
-                                >
-                                  <button 
-                                    onClick={(e) => triggerGallery(note.id, e)}
-                                    className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors border-b border-black/5"
-                                  >
-                                    <ImageIcon size={16} className="text-slate-400" />
-                                    <span>Add Photo</span>
-                                  </button>
-                                  <button 
-                                    onClick={() => setEditingId(null)}
-                                    className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors text-red-500 border-b border-black/5"
-                                  >
-                                    <X size={16} />
-                                    <span>Discard Changes</span>
-                                  </button>
-                                  <button 
-                                    onClick={(e) => startVoiceRecording(e)}
-                                    className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors text-slate-700"
-                                  >
-                                    <Mic size={16} className="text-red-500" />
-                                    <span>Voice Record</span>
-                                  </button>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="w-full h-full flex flex-col group">
-                      <div 
-                        onClick={() => startEditing(note)}
-                        className={`flex-1 w-full cursor-pointer overflow-hidden text-[22px] font-medium leading-[1.4] text-[#222] whitespace-pre-wrap ${note.completed ? 'line-through opacity-40' : ''}`}
-                      >
-                        {note.text || (!note.image && <span className="opacity-20 italic">Click to add note...</span>)}
-                      </div>
-                      
-                      <div className="flex items-center justify-end gap-3 pt-4 opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 relative">
-                        {/* 1. Right Icon (Toggle completion) */}
-                        <button
-                          onClick={(e) => toggleComplete(note.id, e)}
-                          className={`p-2 rounded-full transition-colors ${note.completed ? 'bg-green-500 text-white' : 'hover:bg-black/5 text-[#666]'}`}
-                          title="Mark as done"
-                        >
-                          {note.completed ? <CheckCircle2 size={18} /> : <Check size={18} />}
-                        </button>
-                        
-                        {/* 2. Delete Icon */}
-                        <button
-                          onClick={(e) => deleteNote(note.id, e)}
-                          className="p-2 rounded-full hover:bg-red-50 text-red-500 transition-colors"
-                          title="Delete"
-                        >
-                          <Trash2 size={18} />
-                        </button>
-
-                        {/* 3. Three-dot Icon */}
-                        <div className="relative">
-                          <button
-                            onClick={(e) => toggleMenu(note.id, e)}
-                            className={`p-2 rounded-full transition-colors ${openMenuId === note.id ? 'bg-black text-white' : 'hover:bg-black/5 text-[#666]'}`}
-                            title="More options"
-                          >
-                            <MoreVertical size={18} />
-                          </button>
-                          
-                          <AnimatePresence>
-                            {openMenuId === note.id && (
-                              <motion.div 
-                                initial={{ opacity: 0, scale: 0.9, y: 10 }}
-                                animate={{ opacity: 1, scale: 1, y: 0 }}
-                                exit={{ opacity: 0, scale: 0.9, y: 10 }}
-                                className="absolute bottom-full right-0 mb-2 w-48 bg-white/90 backdrop-blur-xl border border-black/5 rounded-2xl shadow-2xl z-[100] overflow-hidden"
-                              >
-                                <button 
-                                  onClick={(e) => startEditing(note, e)}
-                                  className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors border-b border-black/5"
-                                >
-                                  <Edit3 size={16} className="text-slate-400" />
-                                  <span>Edit text</span>
-                                </button>
-                                <button 
-                                  onClick={(e) => changeColor(note.id, e)}
-                                  className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors border-b border-black/5"
-                                >
-                                  <Palette size={16} className="text-slate-400" />
-                                  <span>Change spectrum</span>
-                                </button>
-                                <button 
-                                  onClick={(e) => triggerGallery(note.id, e)}
-                                  className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors border-b border-black/5"
-                                >
-                                  <ImageIcon size={16} className="text-slate-400" />
-                                  <span>Add gallery photo</span>
-                                </button>
-                                <button 
-                                  onClick={(e) => startVoiceRecording(e)}
-                                  className="w-full flex items-center gap-3 px-4 py-3 text-sm hover:bg-black/5 transition-colors"
-                                >
-                                  <Mic size={16} className="text-red-500" />
-                                  <span>Voice Record</span>
-                                </button>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  </div>
                 </motion.div>
               ))}
             </AnimatePresence>
           </div>
         )}
       </main>
+
+      {/* Full Screen Editor Overlay */}
+      <AnimatePresence>
+        {activeNoteId && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] bg-white flex flex-col"
+          >
+            {/* Editor Header */}
+            <header className="px-8 py-6 flex items-center justify-between border-b border-black/5 bg-white/50 backdrop-blur-xl">
+              <div className="flex items-center gap-4">
+                <button 
+                  onClick={saveNote}
+                  className="p-2 hover:bg-black/5 rounded-full transition-colors text-slate-600"
+                  title="Back"
+                >
+                  <ArrowLeft size={24} />
+                </button>
+                <div className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-[0.2em] ${notes.find(n => n.id === activeNoteId)?.color} bg-opacity-40 border border-black/5 shadow-sm`}>
+                  {isDrawing ? 'Sketching Mode' : 'Writing Mode'}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Mode Switcher */}
+                <button
+                  onClick={() => setIsDrawing(!isDrawing)}
+                  className={`p-3 rounded-2xl transition-all ${isDrawing ? 'bg-purple-50 text-purple-600' : 'bg-blue-50 text-blue-600'}`}
+                  title={isDrawing ? "Switch to Writing" : "Switch to Drawing"}
+                >
+                  {isDrawing ? <Edit3 size={22} /> : <Pencil size={22} />}
+                </button>
+
+                <div className="w-px h-8 bg-black/5 mx-1" />
+
+                {/* Direct Action Tools */}
+                <button
+                  onClick={(e) => triggerGallery(activeNoteId, e)}
+                  className="p-3 rounded-2xl hover:bg-slate-50 text-slate-400 hover:text-blue-500 transition-all"
+                  title="Gallery"
+                >
+                  <ImageIcon size={22} />
+                </button>
+
+                <button
+                  onClick={(e) => startVoiceRecording('note', e)}
+                  className={`p-3 rounded-2xl transition-all ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'hover:bg-slate-50 text-slate-400 hover:text-red-500'}`}
+                  title="Voice to Note"
+                >
+                  <Mic size={22} />
+                </button>
+
+                <button
+                  onClick={(e) => startVoiceRecording('chat', e)}
+                  className="p-3 rounded-2xl hover:bg-blue-50 text-slate-400 hover:text-blue-600 transition-all"
+                  title="AI Voice Chat"
+                >
+                  <MessageCircle size={22} />
+                </button>
+
+                <button
+                  onClick={(e) => changeColor(activeNoteId!, e)}
+                  className="p-3 rounded-2xl hover:bg-slate-50 text-slate-400 hover:text-purple-500 transition-all"
+                  title="Warp Spectrum"
+                >
+                  <Palette size={22} />
+                </button>
+
+                <button
+                  onClick={(e) => {
+                    const note = notes.find(n => n.id === activeNoteId);
+                    if (note) saveAsTemplate({...note, text: editText});
+                  }}
+                  className="p-3 rounded-2xl hover:bg-slate-50 text-slate-400 hover:text-yellow-600 transition-all"
+                  title="Save Template"
+                >
+                  <Sparkles size={22} />
+                </button>
+
+                <div className="w-px h-8 bg-black/5 mx-1" />
+
+                <button
+                  onClick={(e) => deleteNote(activeNoteId!, e)}
+                  className="p-3 rounded-2xl hover:bg-red-50 text-slate-400 hover:text-red-500 transition-all"
+                  title="Delete Note"
+                >
+                  <Trash2 size={22} />
+                </button>
+
+                <button
+                  onClick={saveNote}
+                  className="p-3 bg-black text-white rounded-2xl hover:bg-slate-800 transition-all shadow-lg ml-2"
+                  title="Save & Close"
+                >
+                  <CheckCircle2 size={22} />
+                </button>
+              </div>
+            </header>
+
+            {/* Hybrid Note Editor Body */}
+            <div className={`flex-1 relative overflow-hidden flex flex-col ${notes.find(n => n.id === activeNoteId)?.color}`}>
+              <div className="flex-1 w-full max-w-5xl mx-auto p-12 lg:p-24 relative flex flex-col">
+                
+                {/* Photo Layer */}
+                {notes.find(n => n.id === activeNoteId)?.image && (
+                  <div className="relative mb-8 group shrink-0 z-10 w-full max-w-2xl mx-auto">
+                    <img 
+                      src={notes.find(n => n.id === activeNoteId)?.image} 
+                      className="w-full max-h-[30vh] object-contain rounded-2xl shadow-xl transition-all"
+                      referrerPolicy="no-referrer"
+                    />
+                    <button 
+                      onClick={() => removeImage(activeNoteId)}
+                      className="absolute top-4 right-4 p-2 bg-black/50 text-white rounded-full hover:bg-black transition-colors"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                )}
+
+                {/* Text Layer */}
+                <textarea
+                  autoFocus
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  placeholder="Type your thoughts... or use the mic above"
+                  className={`flex-1 w-full bg-transparent resize-none focus:outline-none text-4xl lg:text-6xl font-medium leading-tight text-[#333] placeholder:opacity-10 z-10 relative ${isDrawing ? 'pointer-events-none' : 'pointer-events-auto'}`}
+                />
+
+                {/* Drawing Layer Overlay */}
+                <div 
+                  ref={canvasContainerRef} 
+                  className={`absolute inset-0 z-20 ${isDrawing ? 'pointer-events-auto cursor-crosshair' : 'pointer-events-none'}`}
+                >
+                  <Stage
+                    width={canvasSize.width}
+                    height={canvasSize.height}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onTouchStart={handleMouseDown}
+                    onTouchMove={handleMouseMove}
+                    onTouchEnd={handleMouseUp}
+                  >
+                    <Layer>
+                      {(notes.find(n => n.id === activeNoteId)?.drawingLines || []).map((line, i) => (
+                        <KonvaLine
+                          key={i}
+                          points={line.points}
+                          stroke={line.color}
+                          strokeWidth={line.strokeWidth}
+                          tension={0.5}
+                          lineCap="round"
+                          lineJoin="round"
+                          globalCompositeOperation={
+                            line.tool === 'eraser' ? 'destination-out' : 'source-over'
+                          }
+                        />
+                      ))}
+                    </Layer>
+                  </Stage>
+                </div>
+
+                {/* Mode Floating Drawing Tools (Only visible when drawing is active) */}
+                <AnimatePresence>
+                  {isDrawing && (
+                    <motion.div 
+                      initial={{ y: 100, opacity: 0, x: "-50%" }}
+                      animate={{ y: 0, opacity: 1, x: "-50%" }}
+                      exit={{ y: 100, opacity: 0, x: "-50%" }}
+                      className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-xl border border-black/10 p-4 rounded-[40px] shadow-[0_30px_60px_rgba(0,0,0,0.15)] flex items-center gap-3 z-[100]"
+                    >
+                      <div className="flex items-center gap-1.5 mr-2">
+                        <button
+                          onClick={() => setDrawTool('pen')}
+                          className={`p-3.5 rounded-2xl transition-all ${drawTool === 'pen' ? 'bg-black text-white' : 'hover:bg-slate-100 text-[#666]'}`}
+                        >
+                          <Pencil size={20} />
+                        </button>
+                        <button
+                          onClick={() => setDrawTool('eraser')}
+                          className={`p-3.5 rounded-2xl transition-all ${drawTool === 'eraser' ? 'bg-black text-white' : 'hover:bg-slate-100 text-[#666]'}`}
+                        >
+                          <Eraser size={20} />
+                        </button>
+                      </div>
+                      
+                      <div className="w-px h-10 bg-black/5 mx-1" />
+                      
+                      <div className="flex items-center gap-2 px-1">
+                        {['#000000', '#ef4444', '#3b82f6', '#10b981', '#f59e0b'].map(c => (
+                          <button
+                            key={c}
+                            onClick={() => { setDrawColor(c); setDrawTool('pen'); }}
+                            className={`w-9 h-9 rounded-full border border-black/10 transition-all hover:scale-115 active:scale-95 ${drawColor === c && drawTool === 'pen' ? 'ring-2 ring-black ring-offset-4' : ''}`}
+                            style={{ backgroundColor: c }}
+                          />
+                        ))}
+                      </div>
+
+                      <div className="w-px h-10 bg-black/5 mx-1" />
+                      
+                      <button
+                        onClick={(e) => clearDrawing(activeNoteId!, e)}
+                        className="p-3.5 text-red-500 hover:bg-red-50 rounded-2xl transition-all font-bold flex items-center gap-2"
+                        title="Clear Canvas"
+                      >
+                        <Trash2 size={20} />
+                        <span className="text-xs uppercase tracking-widest hidden sm:inline">Clear</span>
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Templates Modal */}
+      <AnimatePresence>
+        {isTemplatesModalOpen && (
+          <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsTemplatesModalOpen(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-4xl bg-white rounded-[40px] shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
+            >
+              <div className="px-12 py-8 flex items-center justify-between border-b border-black/5">
+                <div>
+                  <h2 className="text-3xl font-black tracking-tight">Your Templates</h2>
+                  <p className="text-slate-400 font-medium">Quick start your thoughts with presets</p>
+                </div>
+                <button 
+                  onClick={() => setIsTemplatesModalOpen(false)}
+                  className="p-3 hover:bg-black/5 rounded-full transition-colors"
+                >
+                  <X size={28} />
+                </button>
+              </div>
+
+              <div className="p-12 overflow-y-auto">
+                {templates.length === 0 ? (
+                  <div className="py-20 text-center text-slate-300">
+                    <Sparkles className="mx-auto mb-4 opacity-20" size={64} />
+                    <p className="text-xl italic font-medium">No templates saved yet.<br/>Save a note as a template to see it here.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                    {templates.map(template => (
+                      <div 
+                        key={template.id}
+                        onClick={() => applyTemplate(template)}
+                        className={`group relative p-8 rounded-3xl cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg border border-black/5 ${template.color}`}
+                      >
+                        <div className="flex justify-between items-start mb-4">
+                          <h3 className="font-bold text-lg truncate pr-8">{template.name}</h3>
+                          <button 
+                            onClick={(e) => deleteTemplate(template.id, e)}
+                            className="opacity-0 group-hover:opacity-100 p-2 hover:bg-black/10 rounded-full transition-all"
+                          >
+                            <Trash2 size={16} className="text-black/60" />
+                          </button>
+                        </div>
+                        <p className="text-sm opacity-60 line-clamp-3 leading-relaxed">
+                          {template.text || "Visual Template"}
+                        </p>
+                        <div className="mt-6 flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-black/5 px-3 py-1 rounded-full w-fit">
+                          {template.drawingLines?.length ? 'Sketch' : template.image ? 'Media' : 'Text'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Floating Chat Box */}
       <div className="fixed bottom-8 right-8 z-[100] flex flex-col items-end">
@@ -637,7 +959,7 @@ export default function App() {
                   className="flex-1 bg-slate-100 border-none rounded-full px-4 py-2 text-sm focus:ring-1 focus:ring-black outline-none disabled:opacity-50"
                 />
                 <button
-                  onClick={(e) => startVoiceRecording(e)}
+                  onClick={(e) => startVoiceRecording('chat', e)}
                   disabled={isLoading}
                   className={`p-2 rounded-full transition-all transform active:scale-90 ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-100 text-slate-400 hover:text-red-500'}`}
                   title="Start voice recording"
